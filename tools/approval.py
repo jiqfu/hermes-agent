@@ -6,6 +6,7 @@ This module is the single source of truth for the dangerous command system:
 - Approval prompting (CLI interactive + gateway async)
 - Smart approval via auxiliary LLM (auto-approve low-risk commands)
 - Permanent allowlist persistence (config.yaml)
+- i18n support: descriptions use translation keys (not English text)
 """
 
 import contextvars
@@ -74,69 +75,66 @@ _SENSITIVE_WRITE_TARGET = (
 # =========================================================================
 
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
-    (r'\brm\s+-[^\s]*r', "recursive delete"),
-    (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
-    (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
-    (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
-    (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
-    (r'\bchown\s+--recursive\b.*root', "recursive chown to root (long flag)"),
-    (r'\bmkfs\b', "format filesystem"),
-    (r'\bdd\s+.*if=', "disk copy"),
-    (r'>\s*/dev/sd', "write to block device"),
-    (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
-    (r'\bDELETE\s+FROM\b(?!.*\bWHERE\b)', "SQL DELETE without WHERE"),
-    (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
-    (r'>\s*/etc/', "overwrite system config"),
-    (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
-    (r'\bkill\s+-9\s+-1\b', "kill all processes"),
-    (r'\bpkill\s+-9\b', "force kill processes"),
-    (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
-    # Any shell invocation via -c or combined flags like -lc, -ic, etc.
-    (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
-    (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
-    (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
-    (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
-    (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
-    (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
-    (r'\bxargs\s+.*\brm\b', "xargs with rm"),
-    (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
-    (r'\bfind\b.*-delete\b', "find -delete"),
-    # Gateway lifecycle protection: prevent the agent from killing its own
-    # gateway process.  These commands trigger a gateway restart/stop that
-    # terminates all running agents mid-work.
-    (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
-    (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
-    # Gateway protection: never start gateway outside systemd management
-    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
-    (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
-    # Self-termination protection: prevent agent from killing its own process
-    (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
-    # Self-termination via kill + command substitution (pgrep/pidof).
-    # The name-based pattern above catches `pkill hermes` but not
-    # `kill -9 $(pgrep -f hermes)` because the substitution is opaque
-    # to regex at detection time. Catch the structural pattern instead.
-    (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
-    (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
-    # File copy/move/edit into sensitive system paths
-    (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
-    (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
-    (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
-    # Script execution via heredoc — bypasses the -e/-c flag patterns above.
-    # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
-    (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
-    # Git destructive operations that can lose uncommitted work or rewrite
-    # shared history. Not captured by rm/chmod/etc patterns.
-    (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
-    (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
-    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
-    # Script execution after chmod +x — catches the two-step pattern where
-    # a script is first made executable then immediately run. The script
-    # content may contain dangerous commands that individual patterns miss.
-    (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
+    # NOTE: The second element is a TRANSLATION KEY (not English text).
+    # Use _desc(key) to get the localized description for display.
+    # The key is also used as the allowlist entry — never change existing keys.
+    (r'\brm\s+(-[^\s]*\s+)*/', "delete_in_root_path"),
+    (r'\brm\s+-[^\s]*r', "recursive_delete"),
+    (r'\brm\s+--recursive\b', "recursive_delete_long"),
+    (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world_writable_perms"),
+    (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive_chmod_long"),
+    (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive_chown_root"),
+    (r'\bchown\s+--recursive\b.*root', "recursive_chown_root_long"),
+    (r'\bmkfs\b', "format_filesystem"),
+    (r'\bdd\s+.*if=', "disk_copy"),
+    (r'>\s*/dev/sd', "write_block_device"),
+    (r'\bDROP\s+(TABLE|DATABASE)\b', "sql_drop"),
+    (r'\bDELETE\s+FROM\b(?!.*\bWHERE\b)', "sql_delete_no_where"),
+    (r'\bTRUNCATE\s+(TABLE)?\s*\w', "sql_truncate"),
+    (r'>\s*/etc/', "overwrite_system_config"),
+    (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop_system_service"),
+    (r'\bkill\s+-9\s+-1\b', "kill_all_processes"),
+    (r'\bpkill\s+-9\b', "force_kill_processes"),
+    (r':\(:\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork_bomb"),
+    (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell_via_flag"),
+    (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script_via_flag"),
+    (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe_remote_to_shell"),
+    (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "remote_script_substitution"),
+    (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite_system_file_tee"),
+    (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite_system_file_redirect"),
+    (r'\bxargs\s+.*\brm\b', "xargs_with_rm"),
+    (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find_exec_rm"),
+    (r'\bfind\b.*-delete\b', "find_delete"),
+    (r'\bhermes\s+gateway\s+(stop|restart)\b', "gateway_lifecycle"),
+    (r'\bhermes\s+update\b', "gateway_update"),
+    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "gateway_outside_systemd"),
+    (r'\bnohup\b.*gateway\s+run\b', "gateway_outside_systemd"),
+    (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill_hermes_process"),
+    (r'\bkill\b.*\$\(\s*pgrep\b', "kill_via_pgrep"),
+    (r'\bkill\b.*`\s*pgrep\b', "kill_via_backtick_pgrep"),
+    (r'\b(cp|mv|install)\b.*\s/etc/', "copy_into_etc"),
+    (r'\bsed\s+-[^\s]*i.*\s/etc/', "sed_inplace_etc"),
+    (r'\bsed\s+--in-place\b.*\s/etc/', "sed_inplace_etc_long"),
+    (r'\b(python[23]?|perl|ruby|node)\s+<<', "script_heredoc"),
+    (r'\bgit\s+reset\s+--hard\b', "git_reset_hard"),
+    (r'\bgit\s+push\b.*--force\b', "git_force_push"),
+    (r'\bgit\s+push\b.*-f\b', "git_force_push_short"),
+    (r'\bgit\s+clean\s+-[^\s]*f', "git_clean_force"),
+    (r'\bgit\s+branch\s+-D\b', "git_branch_force_delete"),
+    (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod_exec_immediate"),
 ]
+
+
+def _desc(key: str, **kwargs) -> str:
+    """Return the localized description for a DANGEROUS_PATTERNS translation key.
+
+    This is the single point through which all user-facing descriptions
+    pass. The key is returned as-is if the translation is not found,
+    ensuring the allowlist and pattern-matching always work regardless
+    of locale.
+    """
+    from hermes_cli.i18n import _t
+    return _t("patterns", key, **kwargs)
 
 
 def _legacy_pattern_key(pattern: str) -> str:
@@ -188,13 +186,14 @@ def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
-        (is_dangerous, pattern_key, description) or (False, None, None)
+        (is_dangerous, pattern_key, localized_description)
+        pattern_key is the translation key (stable for allowlist).
+        localized_description is the translated string for display.
     """
     command_lower = _normalize_command_for_detection(command).lower()
-    for pattern, description in DANGEROUS_PATTERNS:
+    for pattern, key in DANGEROUS_PATTERNS:
         if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
-            pattern_key = description
-            return (True, pattern_key, description)
+            return (True, key, _desc(key))
     return (False, None, None)
 
 
@@ -438,13 +437,13 @@ def prompt_dangerous_approval(command: str, description: str,
     try:
         while True:
             print()
-            print(f"  ⚠️  DANGEROUS COMMAND: {description}")
+            print(f"  ⚠️  {_t('approval', 'dangerous_command', description=description)}")
             print(f"      {command}")
             print()
             if allow_permanent:
-                print("      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny")
+                print(f"      {_t('approval', 'choice_prompt_once')}")
             else:
-                print("      [o]nce  |  [s]ession  |  [d]eny")
+                print(f"      {_t('approval', 'choice_prompt_no_permanent')}")
             print()
             sys.stdout.flush()
 
@@ -452,7 +451,7 @@ def prompt_dangerous_approval(command: str, description: str,
 
             def get_input():
                 try:
-                    prompt = "      Choice [o/s/a/D]: " if allow_permanent else "      Choice [o/s/D]: "
+                    prompt = "      " + (_t('approval', 'choice_prompt_with_perm') if allow_permanent else _t('approval', 'choice_prompt_no_perm'))
                     result["choice"] = input(prompt).strip().lower()
                 except (EOFError, OSError):
                     result["choice"] = ""
@@ -462,28 +461,28 @@ def prompt_dangerous_approval(command: str, description: str,
             thread.join(timeout=timeout_seconds)
 
             if thread.is_alive():
-                print("\n      ⏱ Timeout - denying command")
+                print(f"\n      ⏱ {_t('approval', 'timeout')}")
                 return "deny"
 
             choice = result["choice"]
             if choice in ('o', 'once'):
-                print("      ✓ Allowed once")
+                print(f"      ✓ {_t('approval', 'allowed_once')}")
                 return "once"
             elif choice in ('s', 'session'):
-                print("      ✓ Allowed for this session")
+                print(f"      ✓ {_t('approval', 'allowed_session')}")
                 return "session"
             elif choice in ('a', 'always'):
                 if not allow_permanent:
-                    print("      ✓ Allowed for this session")
+                    print(f"      ✓ {_t('approval', 'allowed_session')}")
                     return "session"
-                print("      ✓ Added to permanent allowlist")
+                print(f"      ✓ {_t('approval', 'added_permanent')}")
                 return "always"
             else:
-                print("      ✗ Denied")
+                print(f"      ✗ {_t('approval', 'denied')}")
                 return "deny"
 
     except (EOFError, KeyboardInterrupt):
-        print("\n      ✗ Cancelled")
+        print(f"\n      ✗ {_t('approval', 'cancelled')}")
         return "deny"
     finally:
         if "HERMES_SPINNER_PAUSE" in os.environ:
@@ -633,11 +632,7 @@ def check_dangerous_command(command: str, env_type: str,
                 return {
                     "approved": False,
                     "message": (
-                        f"BLOCKED: Command flagged as dangerous ({description}) "
-                        "but cron jobs run without a user present to approve it. "
-                        "Find an alternative approach that avoids this command. "
-                        "To allow dangerous commands in cron jobs, set "
-                        "approvals.cron_mode: approve in config.yaml."
+                        f"BLOCKED: {_t('approval', 'blocked_cron', description=description)}"
                     ),
                 }
         return {"approved": True, "message": None}
@@ -654,10 +649,7 @@ def check_dangerous_command(command: str, env_type: str,
             "status": "approval_required",
             "command": command,
             "description": description,
-            "message": (
-                f"⚠️ This command is potentially dangerous ({description}). "
-                f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
-            ),
+            "message": _t('approval', 'potentially_dangerous', description=description, command=command),
         }
 
     choice = prompt_dangerous_approval(command, description,
@@ -666,7 +658,7 @@ def check_dangerous_command(command: str, env_type: str,
     if choice == "deny":
         return {
             "approved": False,
-            "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
+            "message": f"BLOCKED: {_t('approval', 'blocked_denied', description=description)}",
             "pattern_key": pattern_key,
             "description": description,
         }
@@ -694,7 +686,7 @@ def _format_tirith_description(tirith_result: dict) -> str:
     findings = tirith_result.get("findings") or []
     if not findings:
         summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        return _t("approval", "security_scan", summary=summary)
 
     parts = []
     for f in findings:
@@ -707,9 +699,9 @@ def _format_tirith_description(tirith_result: dict) -> str:
             parts.append(f"[{severity}] {title}" if severity else title)
     if not parts:
         summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        return _t("approval", "security_scan", summary=summary)
 
-    return "Security scan — " + "; ".join(parts)
+    return _t("approval", "security_scan_details", details="; ".join(parts))
 
 
 def check_all_command_guards(command: str, env_type: str,
@@ -746,13 +738,7 @@ def check_all_command_guards(command: str, env_type: str,
                 if is_dangerous:
                     return {
                         "approved": False,
-                        "message": (
-                            f"BLOCKED: Command flagged as dangerous ({description}) "
-                            "but cron jobs run without a user present to approve it. "
-                            "Find an alternative approach that avoids this command. "
-                            "To allow dangerous commands in cron jobs, set "
-                            "approvals.cron_mode: approve in config.yaml."
-                        ),
+                        "message": f"BLOCKED: {_t('approval', 'blocked_cron', description=description)}",
                     }
         return {"approved": True, "message": None}
 
@@ -818,7 +804,7 @@ def check_all_command_guards(command: str, env_type: str,
             return {
                 "approved": False,
                 "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
-                           "The command was assessed as genuinely dangerous. Do NOT retry.",
+                           + _t('approval', 'smart_denied'),
                 "smart_denied": True,
             }
         # verdict == "escalate" → fall through to manual prompt
@@ -867,7 +853,7 @@ def check_all_command_guards(command: str, env_type: str,
                         _gateway_queues.pop(session_key, None)
                 return {
                     "approved": False,
-                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "message": _t('approval', 'notify_failed'),
                     "pattern_key": primary_key,
                     "description": combined_desc,
                 }
@@ -920,10 +906,10 @@ def check_all_command_guards(command: str, env_type: str,
 
             choice = entry.result
             if not resolved or choice is None or choice == "deny":
-                reason = "timed out" if not resolved else "denied by user"
+                reason = _t('approval', 'timed_out') if not resolved else _t('approval', 'user_denied')
                 return {
                     "approved": False,
-                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                    "message": f"BLOCKED: {_t('approval', 'gateway_blocked', reason=reason)}",
                     "pattern_key": primary_key,
                     "description": combined_desc,
                 }
@@ -956,9 +942,7 @@ def check_all_command_guards(command: str, env_type: str,
             "status": "approval_required",
             "command": command,
             "description": combined_desc,
-            "message": (
-                f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
-            ),
+            "message": _t('approval', 'approval_required', description=combined_desc, command=command),
         }
 
     # CLI interactive: single combined prompt
@@ -970,7 +954,7 @@ def check_all_command_guards(command: str, env_type: str,
     if choice == "deny":
         return {
             "approved": False,
-            "message": "BLOCKED: User denied. Do NOT retry.",
+            "message": _t('approval', 'cli_denied'),
             "pattern_key": primary_key,
             "description": combined_desc,
         }
