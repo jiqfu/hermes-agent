@@ -20,6 +20,7 @@ env:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   sync-from-upstream:
@@ -38,15 +39,11 @@ jobs:
         run: |
           UPSTREAM_REPO="NousResearch/hermes-agent"
           
-          # Determine which tag to process
           if [ -n "${{ github.event.inputs.tag }}" ]; then
-            # Manual trigger with specific tag
             TARGET_TAG="${{ github.event.inputs.tag }}"
           elif [ "${{ github.event_name }}" == "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # Tag push - use that tag
             TARGET_TAG="${GITHUB_REF#refs/tags/}"
           else
-            # Scheduled or branch push - get latest upstream tag
             TARGET_TAG=$(curl -s "https://api.github.com/repos/${UPSTREAM_REPO}/tags?per_page=1" | python3 -c "import sys,json; tags=json.load(sys.stdin); print(tags[0]['name'] if tags else '')")
           fi
           
@@ -59,10 +56,8 @@ jobs:
           
           echo "Target tag: $TARGET_TAG"
           
-          # Check if we already have this tag
           if git rev-parse "$TARGET_TAG" >/dev/null 2>&1; then
             echo "Tag $TARGET_TAG already exists in fork"
-            # For workflow_dispatch, still build even if tag exists
             if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
               echo "new_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
               echo "build_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
