@@ -2,11 +2,17 @@ name: Sync from Upstream & Build
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Specific tag to build'
+        required: false
+        type: string
   schedule:
-    # Check for new upstream tags every 6 hours
     - cron: '0 */6 * * *'
   push:
     branches: [main]
+    tags:
+      - '**'
 
 env:
   REGISTRY: ghcr.io
@@ -20,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       new_tag: ${{ steps.check.outputs.new_tag }}
+      build_tag: ${{ steps.check.outputs.build_tag }}
     steps:
       - name: Checkout fork
         uses: actions/checkout@v4
@@ -31,48 +38,60 @@ jobs:
         run: |
           UPSTREAM_REPO="NousResearch/hermes-agent"
           
-          # Get latest upstream tag
-          UPSTREAM_TAG=$(curl -s "https://api.github.com/repos/${UPSTREAM_REPO}/tags?per_page=1" | python3 -c "import sys,json; tags=json.load(sys.stdin); print(tags[0]['name'] if tags else '')")
+          # Determine which tag to process
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            # Manual trigger with specific tag
+            TARGET_TAG="${{ github.event.inputs.tag }}"
+          elif [ "${{ github.event_name }}" == "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # Tag push - use that tag
+            TARGET_TAG="${GITHUB_REF#refs/tags/}"
+          else
+            # Scheduled or branch push - get latest upstream tag
+            TARGET_TAG=$(curl -s "https://api.github.com/repos/${UPSTREAM_REPO}/tags?per_page=1" | python3 -c "import sys,json; tags=json.load(sys.stdin); print(tags[0]['name'] if tags else '')")
+          fi
           
-          if [ -z "$UPSTREAM_TAG" ]; then
-            echo "No upstream tags found"
+          if [ -z "$TARGET_TAG" ]; then
+            echo "No target tag found"
             echo "new_tag=" >> $GITHUB_OUTPUT
+            echo "build_tag=" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          echo "Upstream latest tag: $UPSTREAM_TAG"
+          echo "Target tag: $TARGET_TAG"
           
           # Check if we already have this tag
-          if git rev-parse "$UPSTREAM_TAG" >/dev/null 2>&1; then
-            echo "Tag $UPSTREAM_TAG already exists in fork"
-            echo "new_tag=" >> $GITHUB_OUTPUT
+          if git rev-parse "$TARGET_TAG" >/dev/null 2>&1; then
+            echo "Tag $TARGET_TAG already exists in fork"
+            # For workflow_dispatch, still build even if tag exists
+            if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+              echo "new_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
+              echo "build_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
+            else
+              echo "new_tag=" >> $GITHUB_OUTPUT
+              echo "build_tag=" >> $GITHUB_OUTPUT
+            fi
           else
-            echo "new_tag=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
+            echo "new_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
+            echo "build_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
           fi
 
       - name: Fetch upstream and sync tag
         if: steps.check.outputs.new_tag != ''
         run: |
           UPSTREAM_REPO="NousResearch/hermes-agent"
-          
-          # Fetch upstream tags
           git fetch "https://github.com/${UPSTREAM_REPO}.git" --tags
-          
-          # Checkout the upstream tag commit
           git checkout "refs/tags/${{ steps.check.outputs.new_tag }}"
-          
-          # Push to fork
           git push origin "refs/tags/${{ steps.check.outputs.new_tag }}"
 
   build:
     needs: sync-from-upstream
-    if: needs.sync-from-upstream.outputs.new_tag != ''
+    if: needs.sync-from-upstream.outputs.build_tag != ''
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.sync-from-upstream.outputs.new_tag }}
+          ref: ${{ needs.sync-from-upstream.outputs.build_tag }}
           fetch-depth: 0
 
       - name: Set up QEMU
@@ -96,7 +115,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/${{ github.repository }}:${{ needs.sync-from-upstream.outputs.new_tag }}
+            ghcr.io/${{ github.repository }}:${{ needs.sync-from-upstream.outputs.build_tag }}
             ghcr.io/${{ github.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
