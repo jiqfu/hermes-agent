@@ -32,8 +32,9 @@ if [ "$(id -u)" = "0" ]; then
             echo "Warning: chown failed (rootless container?) — continuing anyway"
     fi
 
-    echo "Dropping root privileges"
-    exec gosu hermes "$0" "$@"
+    # echo "Dropping root privileges"
+    # exec gosu hermes "$0" "$@"
+    echo "Running as root - skipping privilege drop"
 fi
 
 # --- Running as hermes from here ---

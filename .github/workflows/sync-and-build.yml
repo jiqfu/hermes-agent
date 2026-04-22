@@ -1,0 +1,102 @@
+name: Sync from Upstream & Build
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Check for new upstream tags every 6 hours
+    - cron: '0 */6 * * *'
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: write
+
+jobs:
+  sync-from-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.check.outputs.new_tag }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check upstream for new tags
+        id: check
+        run: |
+          UPSTREAM_REPO="NousResearch/hermes-agent"
+          
+          # Get latest upstream tag
+          UPSTREAM_TAG=$(curl -s "https://api.github.com/repos/${UPSTREAM_REPO}/tags?per_page=1" | python3 -c "import sys,json; tags=json.load(sys.stdin); print(tags[0]['name'] if tags else '')")
+          
+          if [ -z "$UPSTREAM_TAG" ]; then
+            echo "No upstream tags found"
+            echo "new_tag=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Upstream latest tag: $UPSTREAM_TAG"
+          
+          # Check if we already have this tag
+          if git rev-parse "$UPSTREAM_TAG" >/dev/null 2>&1; then
+            echo "Tag $UPSTREAM_TAG already exists in fork"
+            echo "new_tag=" >> $GITHUB_OUTPUT
+          else
+            echo "new_tag=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fetch upstream and sync tag
+        if: steps.check.outputs.new_tag != ''
+        run: |
+          UPSTREAM_REPO="NousResearch/hermes-agent"
+          
+          # Fetch upstream tags
+          git fetch "https://github.com/${UPSTREAM_REPO}.git" --tags
+          
+          # Checkout the upstream tag commit
+          git checkout "refs/tags/${{ steps.check.outputs.new_tag }}"
+          
+          # Push to fork
+          git push origin "refs/tags/${{ steps.check.outputs.new_tag }}"
+
+  build:
+    needs: sync-from-upstream
+    if: needs.sync-from-upstream.outputs.new_tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync-from-upstream.outputs.new_tag }}
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ needs.sync-from-upstream.outputs.new_tag }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
