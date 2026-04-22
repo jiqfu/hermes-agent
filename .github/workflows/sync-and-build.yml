@@ -89,9 +89,6 @@ jobs:
           ref: ${{ needs.sync-from-upstream.outputs.build_tag }}
           fetch-depth: 0
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -108,7 +105,7 @@ jobs:
           context: .
           file: Dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           tags: |
             ghcr.io/${{ github.repository }}:${{ needs.sync-from-upstream.outputs.build_tag }}
             ghcr.io/${{ github.repository }}:latest
