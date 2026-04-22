@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Specific tag to build'
+        description: 'Specific tag to build (empty = build from main branch)'
         required: false
         type: string
   schedule:
@@ -28,6 +28,7 @@ jobs:
     outputs:
       new_tag: ${{ steps.check.outputs.new_tag }}
       build_tag: ${{ steps.check.outputs.build_tag }}
+      build_ref: ${{ steps.check.outputs.build_ref }}
     steps:
       - name: Checkout fork
         uses: actions/checkout@v4
@@ -40,10 +41,21 @@ jobs:
           UPSTREAM_REPO="NousResearch/hermes-agent"
           
           if [ -n "${{ github.event.inputs.tag }}" ]; then
+            # Explicit tag specified - use it
             TARGET_TAG="${{ github.event.inputs.tag }}"
+            echo "build_ref=refs/tags/$TARGET_TAG" >> $GITHUB_OUTPUT
           elif [ "${{ github.event_name }}" == "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # Tag push
             TARGET_TAG="${GITHUB_REF#refs/tags/}"
+            echo "build_ref=refs/tags/$TARGET_TAG" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # workflow_dispatch with empty tag - build from main branch
+            echo "build_tag=latest" >> $GITHUB_OUTPUT
+            echo "build_ref=refs/heads/main" >> $GITHUB_OUTPUT
+            echo "new_tag=" >> $GITHUB_OUTPUT
+            exit 0
           else
+            # Scheduled - get latest upstream tag
             TARGET_TAG=$(curl -s "https://api.github.com/repos/${UPSTREAM_REPO}/tags?per_page=1" | python3 -c "import sys,json; tags=json.load(sys.stdin); print(tags[0]['name'] if tags else '')")
           fi
           
@@ -51,6 +63,7 @@ jobs:
             echo "No target tag found"
             echo "new_tag=" >> $GITHUB_OUTPUT
             echo "build_tag=" >> $GITHUB_OUTPUT
+            echo "build_ref=" >> $GITHUB_OUTPUT
             exit 0
           fi
           
@@ -80,13 +93,13 @@ jobs:
 
   build:
     needs: sync-from-upstream
-    if: needs.sync-from-upstream.outputs.build_tag != ''
+    if: needs.sync-from-upstream.outputs.build_tag != '' || needs.sync-from-upstream.outputs.build_ref != ''
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.sync-from-upstream.outputs.build_tag }}
+          ref: ${{ needs.sync-from-upstream.outputs.build_ref || needs.sync-from-upstream.outputs.build_tag }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -107,7 +120,7 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ghcr.io/${{ github.repository }}:${{ needs.sync-from-upstream.outputs.build_tag }}
+            ghcr.io/${{ github.repository }}:${{ needs.sync-from-upstream.outputs.build_tag || 'latest' }}
             ghcr.io/${{ github.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
