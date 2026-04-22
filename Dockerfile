@@ -43,7 +43,7 @@ RUN cd web && npm run build
 
 # ---------- Python virtualenv ----------
 RUN chown hermes:hermes /opt/hermes
-USER hermes
+# USER hermes (run as root instead)
 RUN uv venv && \
     uv pip install --no-cache-dir -e ".[all]"
 
