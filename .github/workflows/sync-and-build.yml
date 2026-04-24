@@ -4,15 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Specific tag to build (empty = build from main branch)'
+        description: 'Specific upstream tag to sync and build'
         required: false
         type: string
   schedule:
     - cron: '0 */6 * * *'
   push:
     branches: [main]
-    tags:
-      - '**'
 
 env:
   REGISTRY: ghcr.io
@@ -23,98 +21,91 @@ permissions:
   packages: write
 
 jobs:
-  sync-from-upstream:
-    runs-on: ubuntu-latest
-    outputs:
-      new_tag: ${{ steps.check.outputs.new_tag }}
-      build_tag: ${{ steps.check.outputs.build_tag }}
-      upstream_tag: ${{ steps.check.outputs.upstream_tag }}
-    steps:
-      - name: Checkout fork
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check upstream for new tags
-        id: check
-        run: |
-          UPSTREAM_REPO="NousResearch/hermes-agent"
-          
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            TARGET_TAG="${{ github.event.inputs.tag }}"
-            echo "upstream_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" == "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TARGET_TAG="${GITHUB_REF#refs/tags/}"
-            echo "upstream_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "upstream_tag=" >> $GITHUB_OUTPUT
-            echo "new_tag=" >> $GITHUB_OUTPUT
-            echo "build_tag=" >> $GITHUB_OUTPUT
-            exit 0
-          else
-            TARGET_TAG=$(curl -s "https://api.github.com/repos/${UPSTREAM_REPO}/tags?per_page=1" | python3 -c "import sys,json; tags=json.load(sys.stdin); print(tags[0]['name'] if tags else '')")
-            echo "upstream_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
-          fi
-          
-          if [ -z "$TARGET_TAG" ]; then
-            echo "No target tag found"
-            echo "new_tag=" >> $GITHUB_OUTPUT
-            echo "build_tag=" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          echo "Target tag: $TARGET_TAG"
-          
-          if git rev-parse "$TARGET_TAG" >/dev/null 2>&1; then
-            echo "Tag $TARGET_TAG already exists in fork"
-            echo "new_tag=" >> $GITHUB_OUTPUT
-            echo "build_tag=" >> $GITHUB_OUTPUT
-          else
-            echo "new_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
-            echo "build_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Fetch upstream and sync tag
-        if: steps.check.outputs.new_tag != ''
-        run: |
-          UPSTREAM_REPO="NousResearch/hermes-agent"
-          git fetch "https://github.com/${UPSTREAM_REPO}.git" --tags
-          git checkout "refs/tags/${{ steps.check.outputs.new_tag }}"
-          git push origin "refs/tags/${{ steps.check.outputs.new_tag }}"
-
-  build:
-    needs: sync-from-upstream
-    if: needs.sync-from-upstream.outputs.build_tag != '' || needs.sync-from-upstream.outputs.upstream_tag != ''
+  sync-and-build:
     runs-on: ubuntu-latest
     steps:
-      # Always build from fork's main branch (contains our fixes)
       - name: Checkout fork main
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
+      - name: Fetch upstream
+        run: |
+          UPSTREAM_REPO="NousResearch/hermes-agent"
+          git fetch "https://github.com/${UPSTREAM_REPO}.git" main
+          UPSTREAM_MAIN_SHA=$(git rev-parse upstream/main)
+          echo "Upstream main SHA: $UPSTREAM_MAIN_SHA"
+          echo "upstream_sha=$UPSTREAM_MAIN_SHA" >> $GITHUB_ENV
+
+      - name: Check if update needed
+        id: check
+        run: |
+          UPSTREAM_REPO="NousResearch/hermes-agent"
+          
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TARGET_TAG="${{ github.event.inputs.tag }}"
+            echo "Manual trigger for tag: $TARGET_TAG"
+            echo "build=true" >> $GITHUB_OUTPUT
+            echo "target_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
+          else
+            TARGET_TAG=$(curl -s "https://api.github.com/repos/${UPSTREAM_REPO}/tags?per_page=1" | python3 -c "import sys,json; tags=json.load(sys.stdin); print(tags[0]['name'] if tags else '')")
+            if [ -z "$TARGET_TAG" ]; then
+              echo "No upstream tag found, skipping"
+              echo "build=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "Latest upstream tag: $TARGET_TAG"
+            echo "target_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
+            
+            FIXED_TAG="${TARGET_TAG}-root"
+            if git rev-parse "$FIXED_TAG" >/dev/null 2>&1; then
+              echo "Fixed tag $FIXED_TAG already exists, skipping build"
+              echo "build=false" >> $GITHUB_OUTPUT
+            else
+              echo "Need to build new fixed tag: $FIXED_TAG"
+              echo "build=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Fetch target upstream tag
+        if: steps.check.outputs.build == 'true'
+        run: |
+          UPSTREAM_REPO="NousResearch/hermes-agent"
+          git fetch "https://github.com/${UPSTREAM_REPO}.git" refs/tags/${{ steps.check.outputs.target_tag }}
+          git fetch "https://github.com/${UPSTREAM_REPO}.git" main
+
+      - name: Create fixed tag
+        if: steps.check.outputs.build == 'true'
+        run: |
+          UPSTREAM_REPO="NousResearch/hermes-agent"
+          TAG_COMMIT=$(git rev-parse upstream/${{ steps.check.outputs.target_tag }})
+          echo "Upstream tag commit: $TAG_COMMIT"
+          
+          git checkout $TAG_COMMIT --detach
+          
+          git merge fix/root-run --no-edit
+          
+          FIXED_TAG="${{ steps.check.outputs.target_tag }}-root"
+          git tag -a "$FIXED_TAG" -m "$FIXED_TAG with root-run fix"
+          git push origin "$FIXED_TAG" 2>&1
+          echo "Created and pushed tag: $FIXED_TAG"
+          echo "fixed_tag=$FIXED_TAG" >> $GITHUB_OUTPUT
+
       - name: Set up Docker Buildx
+        if: steps.check.outputs.build == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: steps.check.outputs.build == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=sha
-
       - name: Build and push
+        if: steps.check.outputs.build == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -122,8 +113,7 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ needs.sync-from-upstream.outputs.build_tag || 'latest' }}
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:${{ env.fixed_tag }}
+            ghcr.io/${{ github.repository }}:latest-root
           cache-from: type=gha
           cache-to: type=gha,mode=max
