@@ -31,9 +31,6 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -43,7 +40,6 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ inputs.tag }}"
           else
-            # push tag format: v2026.4.27-root → upstream tag: v2026.4.27
             PUSH_TAG="${GITHUB_REF_NAME}"
             TAG="${PUSH_TAG%-root}"
           fi
@@ -57,10 +53,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Fetch the upstream tag (from our repo, which mirrors upstream)
           git fetch origin refs/tags/${{ steps.extract.outputs.upstream_tag }}:refs/tags/${{ steps.extract.outputs.upstream_tag }} 2>&1 || echo "Tag not found in remote, using HEAD of fix/root-run"
           
-          # Merge the tag into fix/root-run (or just continue if tag not found)
           if git rev-parse refs/tags/${{ steps.extract.outputs.upstream_tag }} >/dev/null 2>&1; then
             if git merge --no-edit ${{ steps.extract.outputs.upstream_tag }} 2>&1; then
               echo "Merge successful"
@@ -96,13 +90,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push multi-arch image
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           tags: |
             ghcr.io/jiqfu/hermes-agent:${{ steps.extract.outputs.push_tag }}
             ghcr.io/jiqfu/hermes-agent:latest
