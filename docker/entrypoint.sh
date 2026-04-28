@@ -50,8 +50,9 @@ if [ "$(id -u)" = "0" ]; then
         chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
     fi
 
-    echo "Dropping root privileges"
-    exec gosu hermes "$0" "$@"
+    # echo "Dropping root privileges"
+    # exec gosu hermes "$0" "$@"
+    echo "Running as root - skipping privilege drop"
 fi
 
 # --- Running as hermes from here ---

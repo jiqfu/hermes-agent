@@ -1,0 +1,94 @@
+name: Auto Root Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（如 v2026.4.28）'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: auto-root-build
+  cancel-in-progress: true
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            # This is triggered by an upstream tag push (v*)
+            # The tag name could be like v2026.4.27 (no -root suffix)
+            REF_TAG="${GITHUB_REF_NAME}"
+            # Only proceed if it doesn't already end with -root
+            case "${REF_TAG}" in
+              *-root)
+                echo "This is already a root tag, skipping"
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+            esac
+            VERSION="${REF_TAG}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "root_tag=${VERSION}-root" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}"
+
+      - name: Skip if root tag
+        if: steps.version.outputs.skip == 'true'
+        run: echo "Skipping - this is a root tag push"
+
+      - name: Create root tag to trigger docker-build-root workflow
+        if: steps.version.outputs.skip == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ROOT_TAG="${{ steps.version.outputs.root_tag }}"
+          
+          # Check if root tag already exists
+          if git rev-parse "refs/tags/${ROOT_TAG}" >/dev/null 2>&1; then
+            echo "Root tag ${ROOT_TAG} already exists, skipping"
+            exit 0
+          fi
+          
+          # Fetch fix/root-run branch
+          git fetch origin fix/root-run:fix/root-run
+          git checkout fix/root-run
+          
+          # Fetch the upstream tag and merge into fix/root-run
+          git fetch origin "refs/tags/${VERSION}:refs/tags/${VERSION}"
+          
+          if git merge --no-edit "${VERSION}" 2>&1; then
+            echo "Merge successful"
+          else
+            echo "Merge conflict, resolving by keeping root-run version"
+            git checkout --ours .
+            git add .
+            git commit --no-edit
+          fi
+          
+          # Push merged branch
+          git push origin fix/root-run
+          
+          # Create and push the root tag (triggers docker-build-root workflow)
+          git tag "${ROOT_TAG}"
+          git push origin "${ROOT_TAG}"
+          echo "✅ Created and pushed root tag: ${ROOT_TAG}"
